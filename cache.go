@@ -9,6 +9,7 @@ package lcw
 //go:generate sh -c "mockery -inpkg -name LoadingCache -print > /tmp/cache-mock.tmp && mv /tmp/cache-mock.tmp cache_mock.go"
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -20,14 +21,14 @@ type Sizer interface {
 
 // LoadingCache defines guava-like cache with Get method returning cached value ao retrieving it if not in cache
 type LoadingCache interface {
-	Get(key string, fn func() (interface{}, error)) (val interface{}, err error) // load or get from cache
-	Peek(key string) (interface{}, bool)                                         // get from cache by key
-	Invalidate(fn func(key string) bool)                                         // invalidate items for func(key) == true
-	Delete(key string)                                                           // delete by key
-	Purge()                                                                      // clear cache
-	Stat() CacheStat                                                             // cache stats
-	Keys() []string                                                              // list of all keys
-	Close() error                                                                // close open connections
+	Get(ctx context.Context, key string, fn func() (interface{}, error)) (val interface{}, err error) // load or get from cache
+	Peek(ctx context.Context, key string) (interface{}, bool)                                         // get from cache by key
+	Invalidate(ctx context.Context, fn func(key string) bool)                                         // invalidate items for func(key) == true
+	Delete(ctx context.Context, key string)                                                           // delete by key
+	Purge(ctx context.Context)                                                                        // clear cache
+	Stat() CacheStat                                                                                  // cache stats
+	Keys(ctx context.Context) []string                                                                // list of all keys
+	Close() error                                                                                     // close open connections
 }
 
 // CacheStat represent stats values
@@ -58,22 +59,24 @@ func NewNopCache() *Nop {
 }
 
 // Get calls fn without any caching
-func (n *Nop) Get(key string, fn func() (interface{}, error)) (interface{}, error) { return fn() }
+func (n *Nop) Get(ctx context.Context, key string, fn func() (interface{}, error)) (interface{}, error) {
+	return fn()
+}
 
 // Peek does nothing and always returns false
-func (n *Nop) Peek(key string) (interface{}, bool) { return nil, false }
+func (n *Nop) Peek(ctx context.Context, key string) (interface{}, bool) { return nil, false }
 
 // Invalidate does nothing for nop cache
-func (n *Nop) Invalidate(fn func(key string) bool) {}
+func (n *Nop) Invalidate(ctx context.Context, fn func(key string) bool) {}
 
 // Purge does nothing for nop cache
-func (n *Nop) Purge() {}
+func (n *Nop) Purge(ctx context.Context) {}
 
 // Delete does nothing for nop cache
-func (n *Nop) Delete(key string) {}
+func (n *Nop) Delete(ctx context.Context, key string) {}
 
 // Keys does nothing for nop cache
-func (n *Nop) Keys() []string { return nil }
+func (n *Nop) Keys(ctx context.Context) []string { return nil }
 
 // Stat always 0s for nop cache
 func (n *Nop) Stat() CacheStat {

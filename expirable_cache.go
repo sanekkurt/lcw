@@ -1,6 +1,7 @@
 package lcw
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -68,7 +69,7 @@ func NewExpirableCache(opts ...Option) (*ExpirableCache, error) {
 }
 
 // Get gets value by key or load with fn if not found in cache
-func (c *ExpirableCache) Get(key string, fn func() (interface{}, error)) (data interface{}, err error) {
+func (c *ExpirableCache) Get(ctx context.Context, key string, fn func() (interface{}, error)) (data interface{}, err error) {
 	if v, ok := c.backend.Get(key); ok {
 		atomic.AddInt64(&c.Hits, 1)
 		return v, nil
@@ -98,28 +99,28 @@ func (c *ExpirableCache) Get(key string, fn func() (interface{}, error)) (data i
 }
 
 // Invalidate removes keys with passed predicate fn, i.e. fn(key) should be true to get evicted
-func (c *ExpirableCache) Invalidate(fn func(key string) bool) {
+func (c *ExpirableCache) Invalidate(ctx context.Context, fn func(key string) bool) {
 	c.backend.InvalidateFn(fn)
 }
 
 // Peek returns the key value (or undefined if not found) without updating the "recently used"-ness of the key.
-func (c *ExpirableCache) Peek(key string) (interface{}, bool) {
+func (c *ExpirableCache) Peek(ctx context.Context, key string) (interface{}, bool) {
 	return c.backend.Peek(key)
 }
 
 // Purge clears the cache completely.
-func (c *ExpirableCache) Purge() {
+func (c *ExpirableCache) Purge(ctx context.Context) {
 	c.backend.Purge()
 	atomic.StoreInt64(&c.currentSize, 0)
 }
 
 // Delete cache item by key
-func (c *ExpirableCache) Delete(key string) {
+func (c *ExpirableCache) Delete(ctx context.Context, key string) {
 	c.backend.Invalidate(key)
 }
 
 // Keys returns cache keys
-func (c *ExpirableCache) Keys() (res []string) {
+func (c *ExpirableCache) Keys(ctx context.Context) (res []string) {
 	return c.backend.Keys()
 }
 

@@ -1,6 +1,7 @@
 package lcw
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,8 @@ import (
 )
 
 func TestScache_Get(t *testing.T) {
+	var ctx = context.Background()
+
 	lru, err := NewLruCache()
 	require.NoError(t, err)
 	lc := NewScache(lru)
@@ -23,7 +26,7 @@ func TestScache_Get(t *testing.T) {
 
 	var coldCalls int32
 
-	res, err := lc.Get(NewKey("site").ID("key"), func() ([]byte, error) {
+	res, err := lc.Get(ctx, NewKey("site").ID("key"), func() ([]byte, error) {
 		atomic.AddInt32(&coldCalls, 1)
 		return []byte("result"), nil
 	})
@@ -31,7 +34,7 @@ func TestScache_Get(t *testing.T) {
 	assert.Equal(t, "result", string(res))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&coldCalls))
 
-	res, err = lc.Get(NewKey("site").ID("key"), func() ([]byte, error) {
+	res, err = lc.Get(ctx, NewKey("site").ID("key"), func() ([]byte, error) {
 		atomic.AddInt32(&coldCalls, 1)
 		return []byte("result"), nil
 	})
@@ -39,43 +42,45 @@ func TestScache_Get(t *testing.T) {
 	assert.Equal(t, "result", string(res))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&coldCalls))
 
-	lc.Flush(Flusher("site"))
+	lc.Flush(ctx, Flusher("site"))
 	time.Sleep(100 * time.Millisecond) // let postFn to do its thing
 
-	_, err = lc.Get(NewKey("site").ID("key"), func() ([]byte, error) {
+	_, err = lc.Get(ctx, NewKey("site").ID("key"), func() ([]byte, error) {
 		return nil, fmt.Errorf("err")
 	})
 	assert.Error(t, err)
 }
 
 func TestScache_Scopes(t *testing.T) {
+	var ctx = context.Background()
+
 	lru, err := NewLruCache()
 	require.NoError(t, err)
 	lc := NewScache(lru)
 	defer lc.Close()
 
-	res, err := lc.Get(NewKey("site").ID("key").Scopes("s1", "s2"), func() ([]byte, error) {
+	res, err := lc.Get(ctx, NewKey("site").ID("key").Scopes("s1", "s2"), func() ([]byte, error) {
 		return []byte("value"), nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "value", string(res))
 
-	res, err = lc.Get(NewKey("site").ID("key2").Scopes("s2"), func() ([]byte, error) {
+	res, err = lc.Get(ctx, NewKey("site").ID("key2").Scopes("s2"), func() ([]byte, error) {
 		return []byte("value2"), nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "value2", string(res))
 
-	assert.Equal(t, 2, len(lc.lc.Keys()))
-	lc.Flush(Flusher("site").Scopes("s1"))
-	assert.Equal(t, 1, len(lc.lc.Keys()))
+	assert.Equal(t, 2, len(lc.lc.Keys(ctx)))
+	lc.Flush(ctx, Flusher("site").Scopes("s1"))
+	assert.Equal(t, 1, len(lc.lc.Keys(ctx)))
 
-	_, err = lc.Get(NewKey("site").ID("key2").Scopes("s2"), func() ([]byte, error) {
+	_, err = lc.Get(ctx, NewKey("site").ID("key2").Scopes("s2"), func() ([]byte, error) {
 		assert.Fail(t, "should stay")
 		return nil, nil
 	})
 	assert.NoError(t, err)
-	res, err = lc.Get(NewKey("site").ID("key").Scopes("s1", "s2"), func() ([]byte, error) {
+	res, err = lc.Get(ctx, NewKey("site").ID("key").Scopes("s1", "s2"), func() ([]byte, error) {
 		return []byte("value-upd"), nil
 	})
 	assert.NoError(t, err)
@@ -85,12 +90,14 @@ func TestScache_Scopes(t *testing.T) {
 }
 
 func TestScache_Flush(t *testing.T) {
+	var ctx = context.Background()
+
 	lru, err := NewLruCache()
 	require.NoError(t, err)
 	lc := NewScache(lru)
 
 	addToCache := func(id string, scopes ...string) {
-		res, err := lc.Get(NewKey("site").ID(id).Scopes(scopes...), func() ([]byte, error) {
+		res, err := lc.Get(ctx, NewKey("site").ID(id).Scopes(scopes...), func() ([]byte, error) {
 			return []byte("value" + id), nil
 		})
 		require.NoError(t, err)
@@ -98,7 +105,7 @@ func TestScache_Flush(t *testing.T) {
 	}
 
 	init := func() {
-		lc.Flush(Flusher("site"))
+		lc.Flush(ctx, Flusher("site"))
 		addToCache("key1", "s1", "s2")
 		addToCache("key2", "s1", "s2", "s3")
 		addToCache("key3", "s1", "s2", "s3")
@@ -106,7 +113,7 @@ func TestScache_Flush(t *testing.T) {
 		addToCache("key5", "s2")
 		addToCache("key6")
 		addToCache("key7", "s4", "s3")
-		require.Equal(t, 7, len(lc.lc.Keys()), "cache init")
+		require.Equal(t, 7, len(lc.lc.Keys(ctx)), "cache init")
 	}
 
 	tbl := []struct {
@@ -129,26 +136,28 @@ func TestScache_Flush(t *testing.T) {
 		i := i
 		t.Run(tt.msg, func(t *testing.T) {
 			init()
-			lc.Flush(Flusher("site").Scopes(tt.scopes...))
-			assert.Equal(t, tt.left, len(lc.lc.Keys()), "keys size, %s #%d", tt.msg, i)
+			lc.Flush(ctx, Flusher("site").Scopes(tt.scopes...))
+			assert.Equal(t, tt.left, len(lc.lc.Keys(ctx)), "keys size, %s #%d", tt.msg, i)
 		})
 	}
 }
 
 func TestScache_FlushFailed(t *testing.T) {
+	var ctx = context.Background()
+
 	lru, err := NewLruCache()
 	require.NoError(t, err)
 	lc := NewScache(lru)
 
-	val, err := lc.Get(NewKey("site").ID("invalid-composite"), func() ([]byte, error) {
+	val, err := lc.Get(ctx, NewKey("site").ID("invalid-composite"), func() ([]byte, error) {
 		return []byte("value"), nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "value", string(val))
-	assert.Equal(t, 1, len(lc.lc.Keys()))
+	assert.Equal(t, 1, len(lc.lc.Keys(ctx)))
 
-	lc.Flush(Flusher("site").Scopes("invalid-composite"))
-	assert.Equal(t, 1, len(lc.lc.Keys()))
+	lc.Flush(ctx, Flusher("site").Scopes("invalid-composite"))
+	assert.Equal(t, 1, len(lc.lc.Keys(ctx)))
 }
 
 func TestScope_Key(t *testing.T) {
@@ -189,12 +198,14 @@ func TestScope_Key(t *testing.T) {
 }
 
 func TestScache_Parallel(t *testing.T) {
+	var ctx = context.Background()
+
 	var coldCalls int32
 	lru, err := NewLruCache()
 	require.NoError(t, err)
 	lc := NewScache(lru)
 
-	res, err := lc.Get(NewKey("site").ID("key"), func() ([]byte, error) {
+	res, err := lc.Get(ctx, NewKey("site").ID("key"), func() ([]byte, error) {
 		return []byte("value"), nil
 	})
 	assert.NoError(t, err)
@@ -206,7 +217,7 @@ func TestScache_Parallel(t *testing.T) {
 		i := i
 		go func() {
 			defer wg.Done()
-			res, err := lc.Get(NewKey("site").ID("key"), func() ([]byte, error) {
+			res, err := lc.Get(ctx, NewKey("site").ID("key"), func() ([]byte, error) {
 				atomic.AddInt32(&coldCalls, 1)
 				return []byte(fmt.Sprintf("result-%d", i)), nil
 			})
@@ -221,6 +232,8 @@ func TestScache_Parallel(t *testing.T) {
 // LruCache illustrates the use of LRU loading cache
 func ExampleScache() {
 	// set up test server for single response
+	var ctx = context.Background()
+
 	var hitCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.String() == "/post/42" && hitCount == 0 {
@@ -255,7 +268,7 @@ func ExampleScache() {
 	// url not in cache, load data
 	url := ts.URL + "/post/42"
 	key := NewKey().ID(url).Scopes("test")
-	val, err := cache.Get(key, func() (val []byte, err error) {
+	val, err := cache.Get(ctx, key, func() (val []byte, err error) {
 		return loadURL(url)
 	})
 	if err != nil {
@@ -265,7 +278,7 @@ func ExampleScache() {
 
 	// url not in cache, load data
 	key = NewKey().ID(url).Scopes("test")
-	val, err = cache.Get(key, func() (val []byte, err error) {
+	val, err = cache.Get(ctx, key, func() (val []byte, err error) {
 		return loadURL(url)
 	})
 	if err != nil {
@@ -275,7 +288,7 @@ func ExampleScache() {
 
 	// url cached, skip load and get from the cache
 	key = NewKey().ID(url).Scopes("test")
-	val, err = cache.Get(key, func() (val []byte, err error) {
+	val, err = cache.Get(ctx, key, func() (val []byte, err error) {
 		return loadURL(url)
 	})
 	if err != nil {

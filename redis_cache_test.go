@@ -27,18 +27,20 @@ func newTestRedisServer() *miniredis.Miniredis {
 type fakeString string
 
 func TestExpirableRedisCache(t *testing.T) {
+	var ctx = context.Background()
+
 	server := newTestRedisServer()
 	defer server.Close()
 	client := redis.NewClient(&redis.Options{
 		Addr: server.Addr()})
 	defer client.Close()
-	rc, err := NewRedisCache(client, MaxKeys(5), TTL(time.Second*6))
+	rc, err := NewRedisCache("test", client, MaxKeys(5), TTL(time.Second*6))
 	require.NoError(t, err)
 	defer rc.Close()
 	require.NoError(t, err)
 	for i := 0; i < 5; i++ {
 		i := i
-		_, e := rc.Get(fmt.Sprintf("key-%d", i), func() (interface{}, error) {
+		_, e := rc.Get(ctx, fmt.Sprintf("key-%d", i), func() (interface{}, error) {
 			return fmt.Sprintf("result-%d", i), nil
 		})
 		assert.NoError(t, e)
@@ -48,11 +50,11 @@ func TestExpirableRedisCache(t *testing.T) {
 	assert.Equal(t, 5, rc.Stat().Keys)
 	assert.Equal(t, int64(5), rc.Stat().Misses)
 
-	keys := rc.Keys()
+	keys := rc.Keys(ctx)
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	assert.EqualValues(t, []string{"key-0", "key-1", "key-2", "key-3", "key-4"}, keys)
 
-	_, e := rc.Get("key-xx", func() (interface{}, error) {
+	_, e := rc.Get(ctx, "key-xx", func() (interface{}, error) {
 		return "result-xx", nil
 	})
 	assert.NoError(t, e)
@@ -68,6 +70,7 @@ func TestExpirableRedisCache(t *testing.T) {
 }
 
 func TestRedisCache(t *testing.T) {
+	var ctx = context.Background()
 	var coldCalls int32
 
 	server := newTestRedisServer()
@@ -75,13 +78,13 @@ func TestRedisCache(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: server.Addr()})
 	defer client.Close()
-	rc, err := NewRedisCache(client, MaxKeys(5), MaxValSize(10), MaxKeySize(10))
+	rc, err := NewRedisCache("test", client, MaxKeys(5), MaxValSize(10), MaxKeySize(10))
 	require.NoError(t, err)
 	defer rc.Close()
 	// put 5 keys to cache
 	for i := 0; i < 5; i++ {
 		i := i
-		res, e := rc.Get(fmt.Sprintf("key-%d", i), func() (interface{}, error) {
+		res, e := rc.Get(ctx, fmt.Sprintf("key-%d", i), func() (interface{}, error) {
 			atomic.AddInt32(&coldCalls, 1)
 			return fmt.Sprintf("result-%d", i), nil
 		})
@@ -91,14 +94,14 @@ func TestRedisCache(t *testing.T) {
 	}
 
 	// check if really cached
-	res, err := rc.Get("key-3", func() (interface{}, error) {
+	res, err := rc.Get(ctx, "key-3", func() (interface{}, error) {
 		return "result-blah", nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "result-3", res.(string), "should be cached")
 
 	// try to cache after maxKeys reached
-	res, err = rc.Get("key-X", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "key-X", func() (interface{}, error) {
 		return "result-X", nil
 	})
 	assert.NoError(t, err)
@@ -106,49 +109,51 @@ func TestRedisCache(t *testing.T) {
 	assert.Equal(t, int64(5), rc.backend.DBSize(context.Background()).Val())
 
 	// put to cache and make sure it cached
-	res, err = rc.Get("key-Z", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "key-Z", func() (interface{}, error) {
 		return "result-Z", nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "result-Z", res.(string))
 
-	res, err = rc.Get("key-Z", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "key-Z", func() (interface{}, error) {
 		return "result-Zzzz", nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "result-Zzzz", res.(string), "got non-cached value")
 	assert.Equal(t, 5, rc.keys())
 
-	res, err = rc.Get("key-Zzzzzzz", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "key-Zzzzzzz", func() (interface{}, error) {
 		return "result-Zzzz", nil
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, "result-Zzzz", res.(string), "got non-cached value")
 	assert.Equal(t, 5, rc.keys())
 
-	res, ok := rc.Peek("error-key-Z2")
+	res, ok := rc.Peek(ctx, "error-key-Z2")
 	assert.False(t, ok)
 	assert.Nil(t, res)
 }
 
 func TestRedisCacheErrors(t *testing.T) {
+	var ctx = context.Background()
+
 	server := newTestRedisServer()
 	defer server.Close()
 	client := redis.NewClient(&redis.Options{
 		Addr: server.Addr()})
 	defer client.Close()
-	rc, err := NewRedisCache(client)
+	rc, err := NewRedisCache("test", client)
 	require.NoError(t, err)
 	defer rc.Close()
 
-	res, err := rc.Get("error-key-Z", func() (interface{}, error) {
+	res, err := rc.Get(ctx, "error-key-Z", func() (interface{}, error) {
 		return "error-result-Z", fmt.Errorf("some error")
 	})
 	assert.Error(t, err)
 	assert.Equal(t, "error-result-Z", res.(string))
 	assert.Equal(t, int64(1), rc.Stat().Errors)
 
-	res, err = rc.Get("error-key-Z2", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "error-key-Z2", func() (interface{}, error) {
 		return fakeString("error-result-Z2"), nil
 	})
 	assert.Error(t, err)
@@ -156,7 +161,7 @@ func TestRedisCacheErrors(t *testing.T) {
 	assert.Equal(t, int64(2), rc.Stat().Errors)
 
 	server.Close()
-	res, err = rc.Get("error-key-Z3", func() (interface{}, error) {
+	res, err = rc.Get(ctx, "error-key-Z3", func() (interface{}, error) {
 		return fakeString("error-result-Z3"), nil
 	})
 	assert.Error(t, err)
@@ -171,22 +176,22 @@ func TestRedisCache_BadOptions(t *testing.T) {
 		Addr: server.Addr()})
 	defer client.Close()
 
-	_, err := NewRedisCache(client, MaxCacheSize(-1))
+	_, err := NewRedisCache("test", client, MaxCacheSize(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative max cache size")
 
-	_, err = NewRedisCache(client, MaxCacheSize(-1))
+	_, err = NewRedisCache("test", client, MaxCacheSize(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative max cache size")
 
-	_, err = NewRedisCache(client, MaxKeys(-1))
+	_, err = NewRedisCache("test", client, MaxKeys(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative max keys")
 
-	_, err = NewRedisCache(client, MaxValSize(-1))
+	_, err = NewRedisCache("test", client, MaxValSize(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative max value size")
 
-	_, err = NewRedisCache(client, TTL(-1))
+	_, err = NewRedisCache("test", client, TTL(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative ttl")
 
-	_, err = NewRedisCache(client, MaxKeySize(-1))
+	_, err = NewRedisCache("test", client, MaxKeySize(-1))
 	assert.EqualError(t, err, "failed to set cache option: negative max key size")
 
 }

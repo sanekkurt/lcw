@@ -2,7 +2,9 @@ package lcw
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -12,20 +14,41 @@ import (
 // RedisValueSizeLimit is maximum allowed value size in Redis
 const RedisValueSizeLimit = 512 * 1024 * 1024
 
+var (
+	ErrNotAllowed = errors.New("set data is not allowed")
+)
+
+type RedisClient interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Keys(ctx context.Context, pattern string) *redis.StringSliceCmd
+	DBSize(ctx context.Context) *redis.IntCmd
+	FlushDB(ctx context.Context) *redis.StatusCmd
+	Close() error
+}
+
 // RedisCache implements LoadingCache for Redis.
 type RedisCache struct {
 	options
 	CacheStat
-	backend *redis.Client
+	backend   RedisClient
+	keyPrefix string
 }
 
 // NewRedisCache makes Redis LoadingCache implementation.
-func NewRedisCache(backend *redis.Client, opts ...Option) (*RedisCache, error) {
+func NewRedisCache(serviceName string, backend RedisClient, opts ...Option) (*RedisCache, error) {
+	if serviceName == "" {
+		return nil, fmt.Errorf("the service name should not be empty")
+	}
+
 	res := RedisCache{
+		keyPrefix: serviceName + "-",
 		options: options{
 			ttl: 5 * time.Minute,
 		},
 	}
+
 	for _, opt := range opts {
 		if err := opt(&res.options); err != nil {
 			return nil, fmt.Errorf("failed to set cache option: %w", err)
@@ -41,9 +64,24 @@ func NewRedisCache(backend *redis.Client, opts ...Option) (*RedisCache, error) {
 	return &res, nil
 }
 
+// Set sets value by key to cache
+func (c *RedisCache) Set(ctx context.Context, key string, data interface{}) error {
+	if !c.allowed(key, data) {
+		return ErrNotAllowed
+	}
+
+	_, setErr := c.backend.Set(ctx, c.keyPrefix+key, data, c.ttl).Result()
+	if setErr != nil {
+		atomic.AddInt64(&c.Errors, 1)
+		return setErr
+	}
+
+	return nil
+}
+
 // Get gets value by key or load with fn if not found in cache
-func (c *RedisCache) Get(key string, fn func() (interface{}, error)) (data interface{}, err error) {
-	v, getErr := c.backend.Get(context.Background(), key).Result()
+func (c *RedisCache) Get(ctx context.Context, key string, fn func() (interface{}, error)) (data interface{}, err error) {
+	v, getErr := c.backend.Get(ctx, c.keyPrefix+key).Result()
 	switch getErr {
 	// RedisClient returns nil when find a key in DB
 	case nil:
@@ -62,13 +100,11 @@ func (c *RedisCache) Get(key string, fn func() (interface{}, error)) (data inter
 	}
 	atomic.AddInt64(&c.Misses, 1)
 
-	if !c.allowed(key, data) {
-		return data, nil
-	}
+	if setErr := c.Set(ctx, key, data); setErr != nil {
+		if errors.Is(setErr, ErrNotAllowed) {
+			return data, nil
+		}
 
-	_, setErr := c.backend.Set(context.Background(), key, data, c.ttl).Result()
-	if setErr != nil {
-		atomic.AddInt64(&c.Errors, 1)
 		return data, setErr
 	}
 
@@ -76,17 +112,17 @@ func (c *RedisCache) Get(key string, fn func() (interface{}, error)) (data inter
 }
 
 // Invalidate removes keys with passed predicate fn, i.e. fn(key) should be true to get evicted
-func (c *RedisCache) Invalidate(fn func(key string) bool) {
-	for _, key := range c.backend.Keys(context.Background(), "*").Val() { // Keys() returns copy of cache's key, safe to remove directly
-		if fn(key) {
+func (c *RedisCache) Invalidate(ctx context.Context, fn func(key string) bool) {
+	for _, key := range c.backend.Keys(ctx, c.keyPrefix+"*").Val() { // Keys() returns copy of cache's key, safe to remove directly
+		if fn(strings.TrimPrefix(key, c.keyPrefix)) {
 			c.backend.Del(context.Background(), key)
 		}
 	}
 }
 
 // Peek returns the key value (or undefined if not found) without updating the "recently used"-ness of the key.
-func (c *RedisCache) Peek(key string) (interface{}, bool) {
-	ret, err := c.backend.Get(context.Background(), key).Result()
+func (c *RedisCache) Peek(ctx context.Context, key string) (interface{}, bool) {
+	ret, err := c.backend.Get(ctx, c.keyPrefix+key).Result()
 	if err != nil {
 		return nil, false
 	}
@@ -94,19 +130,22 @@ func (c *RedisCache) Peek(key string) (interface{}, bool) {
 }
 
 // Purge clears the cache completely.
-func (c *RedisCache) Purge() {
-	c.backend.FlushDB(context.Background())
-
+func (c *RedisCache) Purge(ctx context.Context) {
+	c.backend.Del(ctx, c.backend.Keys(context.Background(), c.keyPrefix+"*").Val()...)
 }
 
 // Delete cache item by key
-func (c *RedisCache) Delete(key string) {
-	c.backend.Del(context.Background(), key)
+func (c *RedisCache) Delete(ctx context.Context, key string) {
+	c.backend.Del(ctx, c.keyPrefix+key)
 }
 
 // Keys gets all keys for the cache
-func (c *RedisCache) Keys() (res []string) {
-	return c.backend.Keys(context.Background(), "*").Val()
+func (c *RedisCache) Keys(ctx context.Context) (res []string) {
+	for _, key := range c.backend.Keys(ctx, c.keyPrefix+"*").Val() {
+		res = append(res, strings.TrimPrefix(key, c.keyPrefix))
+	}
+
+	return res
 }
 
 // Stat returns cache statistics
@@ -130,11 +169,11 @@ func (c *RedisCache) size() int64 {
 }
 
 func (c *RedisCache) keys() int {
-	return int(c.backend.DBSize(context.Background()).Val())
+	return len(c.backend.Keys(context.Background(), c.keyPrefix+"*").Val())
 }
 
 func (c *RedisCache) allowed(key string, data interface{}) bool {
-	if c.maxKeys > 0 && c.backend.DBSize(context.Background()).Val() >= int64(c.maxKeys) {
+	if c.maxKeys > 0 && int64(len(c.backend.Keys(context.Background(), c.keyPrefix+"*").Val())) >= int64(c.maxKeys) {
 		return false
 	}
 	if c.maxKeySize > 0 && len(key) > c.maxKeySize {

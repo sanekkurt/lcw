@@ -34,7 +34,7 @@ func New(uri string) (LoadingCache, error) {
 		if e != nil {
 			return nil, e
 		}
-		res, e := NewRedisCache(redis.NewClient(redisOpts), opts...)
+		res, e := NewRedisCache("lcw", redis.NewClient(redisOpts), opts...)
 		if e != nil {
 			return nil, fmt.Errorf("make redis for %s: %w", uri, e)
 		}

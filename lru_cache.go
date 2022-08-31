@@ -1,6 +1,7 @@
 package lcw
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 
@@ -64,7 +65,7 @@ func (c *LruCache) init() error {
 }
 
 // Get gets value by key or load with fn if not found in cache
-func (c *LruCache) Get(key string, fn func() (interface{}, error)) (data interface{}, err error) {
+func (c *LruCache) Get(ctx context.Context, key string, fn func() (interface{}, error)) (data interface{}, err error) {
 	if v, ok := c.backend.Get(key); ok {
 		atomic.AddInt64(&c.Hits, 1)
 		return v, nil
@@ -96,18 +97,18 @@ func (c *LruCache) Get(key string, fn func() (interface{}, error)) (data interfa
 }
 
 // Peek returns the key value (or undefined if not found) without updating the "recently used"-ness of the key.
-func (c *LruCache) Peek(key string) (interface{}, bool) {
+func (c *LruCache) Peek(ctx context.Context, key string) (interface{}, bool) {
 	return c.backend.Peek(key)
 }
 
 // Purge clears the cache completely.
-func (c *LruCache) Purge() {
+func (c *LruCache) Purge(ctx context.Context) {
 	c.backend.Purge()
 	atomic.StoreInt64(&c.currentSize, 0)
 }
 
 // Invalidate removes keys with passed predicate fn, i.e. fn(key) should be true to get evicted
-func (c *LruCache) Invalidate(fn func(key string) bool) {
+func (c *LruCache) Invalidate(ctx context.Context, fn func(key string) bool) {
 	for _, k := range c.backend.Keys() { // Keys() returns copy of cache's key, safe to remove directly
 		if key, ok := k.(string); ok && fn(key) {
 			c.backend.Remove(key)
@@ -116,12 +117,12 @@ func (c *LruCache) Invalidate(fn func(key string) bool) {
 }
 
 // Delete cache item by key
-func (c *LruCache) Delete(key string) {
+func (c *LruCache) Delete(ctx context.Context, key string) {
 	c.backend.Remove(key)
 }
 
 // Keys returns cache keys
-func (c *LruCache) Keys() (res []string) {
+func (c *LruCache) Keys(ctx context.Context) (res []string) {
 	keys := c.backend.Keys()
 	res = make([]string, 0, len(keys))
 	for _, key := range keys {

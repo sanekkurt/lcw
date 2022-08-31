@@ -1,6 +1,7 @@
 package lcw
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -17,9 +18,9 @@ func NewScache(lc LoadingCache) *Scache {
 }
 
 // Get retrieves a key from underlying backend
-func (m *Scache) Get(key Key, fn func() ([]byte, error)) (data []byte, err error) {
+func (m *Scache) Get(ctx context.Context, key Key, fn func() ([]byte, error)) (data []byte, err error) {
 	keyStr := key.String()
-	val, err := m.lc.Get(keyStr, func() (value interface{}, e error) {
+	val, err := m.lc.Get(ctx, keyStr, func() (value interface{}, e error) {
 		return fn()
 	})
 	return val.([]byte), err
@@ -36,9 +37,9 @@ func (m *Scache) Close() error {
 }
 
 // Flush clears cache and calls postFlushFn async
-func (m *Scache) Flush(req FlusherRequest) {
+func (m *Scache) Flush(ctx context.Context, req FlusherRequest) {
 	if len(req.scopes) == 0 {
-		m.lc.Purge()
+		m.lc.Purge(ctx)
 		return
 	}
 
@@ -58,9 +59,9 @@ func (m *Scache) Flush(req FlusherRequest) {
 		return false
 	}
 
-	for _, k := range m.lc.Keys() {
+	for _, k := range m.lc.Keys(ctx) {
 		if inScope(k) {
-			m.lc.Delete(k) // Keys() returns copy of cache's key, safe to remove directly
+			m.lc.Delete(ctx, k) // Keys() returns copy of cache's key, safe to remove directly
 		}
 	}
 }
